@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..prompts import get_loader, format_tool_summary
 from ..tools import create_execute_code_tool
+from src.utils.storage.storage_uploader import is_storage_enabled
 
 
 def get_general_subagent_config(
@@ -17,6 +18,8 @@ def get_general_subagent_config(
     additional_tools: Optional[List[Any]] = None,
     include_mcp_docs: bool = True,
     tool_exposure_mode: str = "full",
+    filesystem_tools: Optional[List[Any]] = None,
+    vision_tools: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Get configuration for the general-purpose sub-agent.
 
@@ -27,6 +30,9 @@ def get_general_subagent_config(
         additional_tools: Additional tools to include
         include_mcp_docs: Whether to include MCP tool documentation in prompt
         tool_exposure_mode: How to format tool docs ("full" or "summary")
+        filesystem_tools: Custom filesystem tools (read, write, edit, glob, grep)
+            to use instead of relying on FilesystemMiddleware
+        vision_tools: Optional vision tools (e.g., view_image) for multimodal capabilities
 
     Returns:
         Sub-agent configuration dictionary for deepagent
@@ -60,24 +66,31 @@ result = tool_name(param="value")
     instructions = loader.get_subagent_prompt(
         "general",
         max_iterations=max_iterations,
-        mcp_tool_summary=mcp_tool_summary,
+        tool_summary=mcp_tool_summary,
+        storage_enabled=is_storage_enabled(),
     )
 
     # Create execute_code tool with sandbox and MCP registry
     execute_code_tool = create_execute_code_tool(sandbox, mcp_registry)
 
     # Base tools for general agent
-    # Note: deepagent's FilesystemMiddleware provides: ls, read_file, write_file,
-    # edit_file, glob, grep, bash automatically through the backend
-    # We only need to provide execute_code for MCP tool access
     tools = [execute_code_tool]
+
+    # Add custom filesystem tools if provided
+    # This overrides deepagent's FilesystemMiddleware for these operations
+    if filesystem_tools:
+        tools.extend(filesystem_tools)
+
+    # Add vision tools if provided (e.g., view_image for multimodal capabilities)
+    if vision_tools:
+        tools.extend(vision_tools)
 
     # Add any additional tools
     if additional_tools:
         tools.extend(additional_tools)
 
     return {
-        "name": "general-agent",
+        "name": "general-purpose",  # Override built-in general-purpose with our custom prompt
         "description": (
             "Delegate complex tasks to the general-purpose sub-agent. "
             "This agent has access to all filesystem tools (read, write, edit, glob, grep, bash) "
@@ -96,6 +109,8 @@ def create_general_subagent(
     additional_tools: Optional[List[Any]] = None,
     include_mcp_docs: bool = True,
     tool_exposure_mode: str = "full",
+    filesystem_tools: Optional[List[Any]] = None,
+    vision_tools: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Create a general-purpose sub-agent for deepagent.
 
@@ -108,6 +123,8 @@ def create_general_subagent(
         additional_tools: Additional tools to include
         include_mcp_docs: Whether to include MCP tool documentation in prompt
         tool_exposure_mode: How to format tool docs ("full" or "summary")
+        filesystem_tools: Custom filesystem tools (read, write, edit, glob, grep)
+        vision_tools: Optional vision tools (e.g., view_image) for multimodal capabilities
 
     Returns:
         Sub-agent configuration dictionary
@@ -119,4 +136,6 @@ def create_general_subagent(
         additional_tools=additional_tools,
         include_mcp_docs=include_mcp_docs,
         tool_exposure_mode=tool_exposure_mode,
+        filesystem_tools=filesystem_tools,
+        vision_tools=vision_tools,
     )

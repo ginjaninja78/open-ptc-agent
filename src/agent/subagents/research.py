@@ -4,7 +4,7 @@ This sub-agent specializes in web research using Tavily search
 and strategic thinking for comprehensive information gathering.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..prompts import get_loader
 from ..tools.research import tavily_search, think_tool
@@ -12,7 +12,7 @@ from ..tools.research import tavily_search, think_tool
 
 def get_research_subagent_config(
     max_researcher_iterations: int = 3,
-    mcp_tools: List[Any] = None,
+    mcp_tools: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Get configuration for the research sub-agent.
 
@@ -35,7 +35,7 @@ def get_research_subagent_config(
         tools.extend(mcp_tools)
 
     return {
-        "name": "research-agent",
+        "name": "research",
         "description": (
             "Delegate research to the sub-agent researcher. "
             "Give this researcher one specific topic or question at a time. "
@@ -48,7 +48,7 @@ def get_research_subagent_config(
 
 def create_research_subagent(
     max_researcher_iterations: int = 3,
-    mcp_tools: List[Any] = None,
+    mcp_tools: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Create a research sub-agent for deepagent.
 

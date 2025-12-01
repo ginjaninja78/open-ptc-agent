@@ -8,11 +8,11 @@ from .research import create_research_subagent, get_research_subagent_config
 # Registry mapping subagent names to their creation functions
 SUBAGENT_REGISTRY = {
     "research": create_research_subagent,
-    "general": create_general_subagent,
+    "general-purpose": create_general_subagent,
 }
 
 # Subagents that require sandbox and mcp_registry
-STATEFUL_SUBAGENTS = {"general"}
+STATEFUL_SUBAGENTS = {"general-purpose"}
 
 # Parameter mapping for each subagent type
 # Maps generic parameter names to subagent-specific parameter names
@@ -20,8 +20,8 @@ SUBAGENT_PARAMS = {
     "research": {
         "accepted": ["max_researcher_iterations", "mcp_tools"],
     },
-    "general": {
-        "accepted": ["max_iterations", "additional_tools", "include_mcp_docs", "tool_exposure_mode"],
+    "general-purpose": {
+        "accepted": ["max_iterations", "additional_tools", "include_mcp_docs", "tool_exposure_mode", "filesystem_tools", "vision_tools"],
     },
 }
 
@@ -35,7 +35,7 @@ def create_subagent_by_name(
     """Create a subagent by name using the registry.
 
     Args:
-        name: Name of the subagent (e.g., "research", "general")
+        name: Name of the subagent (e.g., "research", "general-purpose")
         sandbox: PTCSandbox instance (required for stateful subagents)
         mcp_registry: MCPRegistry instance (required for stateful subagents)
         **kwargs: Additional arguments passed to the subagent creation function
@@ -73,6 +73,7 @@ def create_subagents_from_names(
     names: List[str],
     sandbox: Optional[Any] = None,
     mcp_registry: Optional[Any] = None,
+    counter_middleware: Optional[Any] = None,
     **kwargs,
 ) -> List[Dict[str, Any]]:
     """Create multiple subagents from a list of names.
@@ -81,15 +82,26 @@ def create_subagents_from_names(
         names: List of subagent names to create
         sandbox: PTCSandbox instance (required for stateful subagents)
         mcp_registry: MCPRegistry instance (required for stateful subagents)
+        counter_middleware: Optional ToolCallCounterMiddleware to inject into
+            subagents for tracking tool calls. Used for background execution
+            progress monitoring.
         **kwargs: Additional arguments passed to all subagent creation functions
 
     Returns:
         List of configured subagent dictionaries
     """
-    return [
-        create_subagent_by_name(name, sandbox, mcp_registry, **kwargs)
-        for name in names
-    ]
+    subagents = []
+    for name in names:
+        spec = create_subagent_by_name(name, sandbox, mcp_registry, **kwargs)
+
+        # Inject counter middleware if provided
+        if counter_middleware is not None:
+            existing_middleware = spec.get("middleware", [])
+            spec["middleware"] = [counter_middleware] + list(existing_middleware)
+
+        subagents.append(spec)
+
+    return subagents
 
 
 __all__ = [

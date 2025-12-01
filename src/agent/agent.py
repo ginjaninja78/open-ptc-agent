@@ -25,8 +25,15 @@ from src.agent.tools import (
     create_grep_tool,
 )
 from src.utils.storage.storage_uploader import is_storage_enabled
-from src.agent.prompts import get_loader, format_tool_summary, build_mcp_section
+from src.agent.prompts import get_loader, format_tool_summary, format_subagent_summary, build_mcp_section
 from src.agent.subagents import create_subagents_from_names
+from src.agent.middleware import (
+    BackgroundSubagentMiddleware,
+    BackgroundSubagentOrchestrator,
+    ToolCallCounterMiddleware,
+    ViewImageMiddleware,
+    create_view_image_tool,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -54,6 +61,7 @@ class PTCAgent:
         """
         self.config = config
         self.llm = config.get_llm_client()
+        self.subagents = {}  # Populated in create_agent() for introspection
 
         logger.info(
             "Initialized PTCAgent with deepagent",
@@ -61,11 +69,45 @@ class PTCAgent:
             model=config.llm_definition.model_id,
         )
 
-    def _build_system_prompt(self, tool_summary: str) -> str:
+    def _get_subagent_summary(self, mcp_registry: Optional[MCPRegistry] = None) -> str:
+        """Get formatted subagent summary for prompts.
+
+        Returns a summary of configured subagents. If called after create_agent(),
+        returns the actual subagents that were created. If called before, returns
+        a summary based on configured subagent names.
+
+        Args:
+            mcp_registry: Optional MCP registry (unused, kept for API consistency)
+
+        Returns:
+            Formatted subagent summary string
+        """
+        if self.subagents:
+            # Format from stored subagent info (after create_agent was called)
+            lines = []
+            for name, info in self.subagents.items():
+                description = info.get("description", "")
+                tools = info.get("tools", [])
+                lines.append(f"- **{name}**: {description}")
+                if tools:
+                    lines.append(f"  Tools: {', '.join(tools)}")
+            return "\n".join(lines) if lines else "No sub-agents configured."
+        else:
+            # Before create_agent, show configured subagent names
+            if self.config.subagents_enabled:
+                return f"Configured subagents: {', '.join(self.config.subagents_enabled)}"
+            return "No sub-agents configured."
+
+    def _build_system_prompt(
+        self,
+        tool_summary: str,
+        subagent_summary: str,
+    ) -> str:
         """Build the system prompt for the agent.
 
         Args:
             tool_summary: Formatted MCP tool summary
+            subagent_summary: Formatted subagent summary
 
         Returns:
             Complete system prompt
@@ -75,6 +117,7 @@ class PTCAgent:
         # Render the main system prompt with all variables
         return loader.get_system_prompt(
             tool_summary=tool_summary,
+            subagent_summary=subagent_summary,
             max_concurrent_task_units=DEFAULT_MAX_CONCURRENT_TASK_UNITS,
             max_task_iterations=DEFAULT_MAX_TASK_ITERATIONS,
             storage_enabled=is_storage_enabled(),
@@ -111,19 +154,22 @@ class PTCAgent:
         self,
         sandbox: PTCSandbox,
         mcp_registry: MCPRegistry,
-        subagent_names: List[str] = None,
-        additional_subagents: List[Dict[str, Any]] = None,
+        subagent_names: Optional[List[str]] = None,
+        additional_subagents: Optional[List[Dict[str, Any]]] = None,
+        background_timeout: float = 300.0,
     ) -> Any:
         """Create a deepagent with PTC pattern capabilities.
 
         Args:
             sandbox: PTCSandbox instance for code execution
             mcp_registry: MCPRegistry with available MCP tools
-            subagent_names: List of subagent names to include (default: ["research"])
-            additional_subagents: Additional sub-agent configurations
+            subagent_names: List of subagent names to include from SUBAGENT_REGISTRY
+                (default: config.subagents_enabled)
+            additional_subagents: Custom subagent dicts that bypass the registry
+            background_timeout: Timeout for waiting on background tasks (seconds)
 
         Returns:
-            Configured deepagent that can execute tasks
+            Configured BackgroundSubagentOrchestrator wrapping the deepagent
         """
         # Create the execute_code tool for MCP invocation
         execute_code_tool = create_execute_code_tool(sandbox, mcp_registry)
@@ -139,17 +185,19 @@ class PTCAgent:
         backend = DaytonaBackend(sandbox)
 
         # Conditional tool loading based on config
+        filesystem_tools = []  # Will be passed to subagents
         if self.config.use_custom_filesystem_tools:
             # Add custom filesystem tools with SAME NAMES as middleware tools
             # They will OVERRIDE middleware tools (same name + later position wins)
             read_file, write_file, edit_file = create_filesystem_tools(sandbox)
-            tools.extend([
+            filesystem_tools = [
                 read_file,                        # overrides middleware read_file
                 write_file,                       # overrides middleware write_file
                 edit_file,                        # overrides middleware edit_file
                 create_glob_tool(sandbox),        # overrides middleware glob
                 create_grep_tool(sandbox),        # overrides middleware grep
-            ])
+            ]
+            tools.extend(filesystem_tools)
             logger.info(
                 "Using custom filesystem tools (overriding middleware)",
                 tools=["read_file", "write_file", "edit_file", "glob", "grep"],
@@ -160,27 +208,87 @@ class PTCAgent:
                 tools=["read_file", "write_file", "edit_file", "glob", "grep", "ls"],
             )
 
-        # Get tool summary for system prompt
-        tool_summary = self._get_tool_summary(mcp_registry)
+        # Add view_image tool if enabled (with sandbox for reading local images)
+        view_image_tool = None
+        if self.config.enable_view_image:
+            view_image_tool = create_view_image_tool(sandbox=sandbox)
+            tools.append(view_image_tool)
+            logger.info("Vision tool enabled", tool="view_image")
 
-        # Build system prompt
-        system_prompt = self._build_system_prompt(tool_summary)
-
-        # Default to research subagent if none specified
+        # Default to subagents from config if none specified
         if subagent_names is None:
-            subagent_names = ["research"]
+            subagent_names = self.config.subagents_enabled
+
+        # Create middleware list
+        middleware_list = []
+
+        # Add view image middleware (always added when tool is enabled, for image injection)
+        if self.config.enable_view_image:
+            view_image_middleware = ViewImageMiddleware(
+                validate_urls=True,
+                strict_validation=True,
+                sandbox=sandbox,
+            )
+            middleware_list.append(view_image_middleware)
+            logger.info("ViewImageMiddleware enabled with strict validation and sandbox support")
+
+        # Create background subagent middleware (must be created before subagents)
+        background_middleware = BackgroundSubagentMiddleware(
+            timeout=background_timeout,
+            enabled=True,
+        )
+        middleware_list.append(background_middleware)
+        # Add background management tools (wait, check_task_progress)
+        tools.extend(background_middleware.tools)
+        # Create counter middleware for tracking subagent tool calls
+        counter_middleware = ToolCallCounterMiddleware(
+            registry=background_middleware.registry
+        )
+        logger.info(
+            "Background subagent execution enabled",
+            timeout=background_timeout,
+            background_tools=[t.name for t in background_middleware.tools],
+        )
 
         # Create subagents from names using the registry
+        # Pass vision tools to subagents if enabled
+        vision_tools = [view_image_tool] if view_image_tool else None
         subagents = create_subagents_from_names(
             names=subagent_names,
             sandbox=sandbox,
             mcp_registry=mcp_registry,
+            counter_middleware=counter_middleware,
             max_researcher_iterations=DEFAULT_MAX_TASK_ITERATIONS,
             max_iterations=DEFAULT_MAX_GENERAL_ITERATIONS,
+            filesystem_tools=filesystem_tools,  # Pass custom tools to subagents
+            vision_tools=vision_tools,  # Pass vision tools to subagents
         )
 
         if additional_subagents:
             subagents.extend(additional_subagents)
+
+        # Get tool summary for system prompt
+        tool_summary = self._get_tool_summary(mcp_registry)
+
+        # Build subagent summary for system prompt
+        subagent_summary = format_subagent_summary(subagents)
+
+        # Build system prompt (includes subagent summary)
+        system_prompt = self._build_system_prompt(tool_summary, subagent_summary)
+
+        # Store subagent info for introspection (used by print_agent_config)
+        self.subagents = {}
+        for subagent in subagents:
+            name = subagent.get("name", "unknown")
+            subagent_tools = subagent.get("tools", [])
+            tool_names = [t.name if hasattr(t, "name") else str(t) for t in subagent_tools]
+            self.subagents[name] = {
+                "description": subagent.get("description", ""),
+                "tools": tool_names,
+            }
+
+        # Store native tools info for introspection (used by print_agent_config)
+        self.native_tools = [t.name if hasattr(t, "name") else str(t) for t in tools]
 
         logger.info(
             "Creating deepagent",
@@ -193,15 +301,22 @@ class PTCAgent:
         # Note: deep-agent automatically adds these middlewares:
         # - TodoListMiddleware, SummarizationMiddleware, FilesystemMiddleware,
         # - SubAgentMiddleware, AnthropicPromptCachingMiddleware, PatchToolCallsMiddleware
+        # Our custom "general-purpose" subagent overrides the built-in one (same name)
+        # Subagent list is also included in system prompt for easy reference
         agent = create_deep_agent(
             model=self.llm,
             tools=tools,
             system_prompt=system_prompt,
             subagents=subagents if subagents else None,
             backend=backend,
+            middleware=middleware_list if middleware_list else None,
         )
 
-        return agent
+        # Wrap with orchestrator for background execution support
+        return BackgroundSubagentOrchestrator(
+            agent=agent,
+            middleware=background_middleware,
+        )
 
 
 class PTCExecutor:
@@ -233,12 +348,15 @@ class PTCExecutor:
             max_retries: Maximum retry attempts
 
         Returns:
-            Final execution result
+            Final execution result.
         """
         logger.info("Executing task with deepagent", task=task[:100])
 
         # Create the agent with injected dependencies
-        agent = self.agent.create_agent(sandbox, self.mcp_registry)
+        agent = self.agent.create_agent(
+            sandbox,
+            self.mcp_registry,
+        )
 
         try:
             # Configure recursion limit
@@ -250,7 +368,6 @@ class PTCExecutor:
                 config={"recursion_limit": recursion_limit},
             )
 
-            # Parse result into ExecutionResult
             return await self._parse_agent_result(agent_result, sandbox)
 
         except Exception as e:
@@ -268,7 +385,9 @@ class PTCExecutor:
             )
 
     async def _parse_agent_result(
-        self, agent_result: dict, sandbox: PTCSandbox
+        self,
+        agent_result: dict,
+        sandbox: PTCSandbox,
     ) -> ExecutionResult:
         """Parse deepagent result into ExecutionResult.
 
@@ -335,14 +454,15 @@ class PTCExecutor:
             stdout = ""
             stderr = observation.replace("ERROR", "").strip()
 
-        # Get files from sandbox
+        # Get files from sandbox (optional - failure doesn't affect result)
         files_created = []
         try:
             if hasattr(sandbox, "_list_result_files"):
                 result_files = await sandbox._list_result_files()
                 files_created = [f for f in result_files if f]
-        except Exception:
-            pass
+        except Exception as e:
+            # Graceful degradation: file listing is optional, log for debugging
+            logger.debug("Failed to list result files (non-critical)", error=str(e))
 
         return ExecutionResult(
             success=success,
@@ -373,9 +493,3 @@ async def create_ptc_agent(config: Optional[AgentConfig] = None) -> PTCAgent:
         config.validate_api_keys()
 
     return PTCAgent(config)
-
-
-# Legacy aliases for backward compatibility
-CodeActAgent = PTCAgent
-CodeExecutor = PTCExecutor
-create_codeact_agent = create_ptc_agent
