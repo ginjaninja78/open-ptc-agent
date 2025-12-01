@@ -4,12 +4,15 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import structlog
 from IPython.display import Image, Markdown, display
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+
+logger = structlog.get_logger(__name__)
 
 console = Console()
 
@@ -196,12 +199,13 @@ def show_prompt(prompt_text: str, title: str = "Prompt", border_style: str = "bl
     )
 
 
-def print_agent_config(config, session):
+def print_agent_config(config, session, ptc_agent=None):
     """Display agent configuration summary.
 
     Args:
         config: AgentConfig instance
         session: Session instance with mcp_registry
+        ptc_agent: PTCAgent instance (optional, for dynamic subagent display)
     """
     print("=" * 70)
     print("AGENT CONFIGURATION SUMMARY")
@@ -231,12 +235,21 @@ def print_agent_config(config, session):
     # 3. Native Tools
     print("\n🛠️ NATIVE TOOLS")
     print("-" * 40)
-    print("  Glob, Grep, Read, Write, Edit, Bash, execute_code")
+    if ptc_agent and hasattr(ptc_agent, "native_tools") and ptc_agent.native_tools:
+        print(f"  {', '.join(ptc_agent.native_tools)}")
+    else:
+        print("  (tools not available - agent not created yet)")
 
-    # 4. Subagents
+    # 4. Subagents - Dynamic from ptc_agent
     print("\n🤖 SUBAGENTS")
     print("-" * 40)
-    print("  research-agent: tavily_search, think_tool (web research)")
+
+    if ptc_agent and hasattr(ptc_agent, "subagents") and ptc_agent.subagents:
+        for name, info in ptc_agent.subagents.items():
+            tools_str = ", ".join(info.get("tools", []))
+            print(f"  {name}: {tools_str}")
+    else:
+        print("  (no subagents configured or agent not created yet)")
 
     print("\n" + "=" * 70)
 

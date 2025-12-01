@@ -12,22 +12,20 @@ LLM configuration is handled separately in src/agent/config.py.
 """
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.utils.config_loader import (
-    DAYTONA_REQUIRED_FIELDS,
-    FILESYSTEM_REQUIRED_FIELDS,
-    LOGGING_REQUIRED_FIELDS,
-    MCP_REQUIRED_FIELDS,
-    SECURITY_REQUIRED_FIELDS,
+    create_daytona_config,
+    create_filesystem_config,
+    create_logging_config,
+    create_mcp_config,
+    create_security_config,
     load_dotenv_async,
     load_yaml_file,
     validate_required_sections,
-    validate_section_fields,
 )
 
 
@@ -87,7 +85,6 @@ class LoggingConfig(BaseModel):
     """Logging configuration."""
 
     level: str  # From config.yaml
-    format: str  # From config.yaml
     file: str  # From config.yaml
 
 
@@ -152,74 +149,12 @@ class CoreConfig(BaseModel):
         required_sections = ["daytona", "security", "mcp", "logging", "filesystem"]
         validate_required_sections(config_data, required_sections)
 
-        # Load Daytona configuration
-        daytona_data = config_data["daytona"]
-        validate_section_fields(daytona_data, DAYTONA_REQUIRED_FIELDS, "daytona")
-
-        # Load snapshot configuration
-        daytona_config = DaytonaConfig(
-            api_key=os.getenv("DAYTONA_API_KEY", ""),
-            base_url=daytona_data["base_url"],
-            auto_stop_interval=daytona_data["auto_stop_interval"],
-            auto_archive_interval=daytona_data["auto_archive_interval"],
-            auto_delete_interval=daytona_data["auto_delete_interval"],
-            python_version=daytona_data["python_version"],
-            snapshot_enabled=daytona_data.get("snapshot_enabled", True),
-            snapshot_name=daytona_data.get("snapshot_name"),
-            snapshot_auto_create=daytona_data.get("snapshot_auto_create", True),
-        )
-
-        # Load Security configuration
-        security_data = config_data["security"]
-        validate_section_fields(security_data, SECURITY_REQUIRED_FIELDS, "security")
-
-        security_config = SecurityConfig(
-            max_execution_time=security_data["max_execution_time"],
-            max_code_length=security_data["max_code_length"],
-            max_file_size=security_data["max_file_size"],
-            enable_code_validation=security_data["enable_code_validation"],
-            allowed_imports=security_data["allowed_imports"],
-            blocked_patterns=security_data["blocked_patterns"],
-        )
-
-        # Load MCP configuration
-        mcp_data = config_data["mcp"]
-        validate_section_fields(mcp_data, MCP_REQUIRED_FIELDS, "mcp")
-
-        mcp_servers = [MCPServerConfig(**server) for server in mcp_data["servers"]]
-        mcp_config = MCPConfig(
-            servers=mcp_servers,
-            tool_discovery_enabled=mcp_data["tool_discovery_enabled"],
-            lazy_load=mcp_data.get("lazy_load", True),
-            cache_duration=mcp_data.get("cache_duration"),
-            tool_exposure_mode=mcp_data.get("tool_exposure_mode", "summary"),
-        )
-
-        # Load Logging configuration
-        logging_data = config_data["logging"]
-        validate_section_fields(logging_data, LOGGING_REQUIRED_FIELDS, "logging")
-
-        logging_config = LoggingConfig(
-            level=logging_data["level"],
-            format=logging_data["format"],
-            file=logging_data["file"],
-        )
-
-        # Load Filesystem configuration
-        filesystem_data = config_data["filesystem"]
-        required_filesystem_fields = ["allowed_directories"]
-        missing_filesystem = [
-            f for f in required_filesystem_fields if f not in filesystem_data
-        ]
-        if missing_filesystem:
-            raise ValueError(
-                f"Missing required fields in filesystem section: {', '.join(missing_filesystem)}"
-            )
-
-        filesystem_config = FilesystemConfig(
-            allowed_directories=filesystem_data["allowed_directories"],
-            enable_path_validation=filesystem_data.get("enable_path_validation", True),
-        )
+        # Load configurations using shared factory functions
+        daytona_config = create_daytona_config(config_data["daytona"])
+        security_config = create_security_config(config_data["security"])
+        mcp_config = create_mcp_config(config_data["mcp"])
+        logging_config = create_logging_config(config_data["logging"])
+        filesystem_config = create_filesystem_config(config_data["filesystem"])
 
         # Create config object
         config = cls(

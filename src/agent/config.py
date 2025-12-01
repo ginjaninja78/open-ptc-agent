@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiofiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,19 +22,18 @@ from src.ptc_core.config import (
     FilesystemConfig,
     LoggingConfig,
     MCPConfig,
-    MCPServerConfig,
     SecurityConfig,
 )
 from src.utils.config_loader import (
-    DAYTONA_REQUIRED_FIELDS,
-    FILESYSTEM_REQUIRED_FIELDS,
-    LOGGING_REQUIRED_FIELDS,
-    MCP_REQUIRED_FIELDS,
-    SECURITY_REQUIRED_FIELDS,
+    configure_logging,
+    create_daytona_config,
+    create_filesystem_config,
+    create_logging_config,
+    create_mcp_config,
+    create_security_config,
     load_dotenv_async,
     load_yaml_file,
     validate_required_sections,
-    validate_section_fields,
 )
 
 
@@ -78,6 +77,14 @@ class AgentConfig(BaseModel):
     # If True, use custom filesystem tools (Read, Write, Edit, Glob, Grep)
     # If False, use deepagents' native middleware tools (read_file, write_file, etc.)
     use_custom_filesystem_tools: bool = True
+
+    # Vision tool configuration
+    # If True, enable view_image tool for viewing images (requires vision-capable model)
+    enable_view_image: bool = True
+
+    # Subagent configuration
+    # List of enabled subagent names (available: research, general-purpose)
+    subagents_enabled: List[str] = Field(default_factory=lambda: ["general-purpose"])
 
     # Note: deep-agent automatically enables middlewares (TodoList, Summarization, etc.)
 
@@ -178,71 +185,24 @@ class AgentConfig(BaseModel):
         # Create LLM config
         llm_config = LLMConfig(name=llm_name)
 
-        # Load Daytona configuration
-        daytona_data = config_data["daytona"]
-        validate_section_fields(daytona_data, DAYTONA_REQUIRED_FIELDS, "daytona")
+        # Load configurations using shared factory functions
+        daytona_config = create_daytona_config(config_data["daytona"])
+        security_config = create_security_config(config_data["security"])
+        mcp_config = create_mcp_config(config_data["mcp"])
+        logging_config = create_logging_config(config_data["logging"])
+        filesystem_config = create_filesystem_config(config_data["filesystem"])
 
-        # Load snapshot configuration
-        daytona_config = DaytonaConfig(
-            api_key=os.getenv("DAYTONA_API_KEY", ""),
-            base_url=daytona_data["base_url"],
-            auto_stop_interval=daytona_data["auto_stop_interval"],
-            auto_archive_interval=daytona_data["auto_archive_interval"],
-            auto_delete_interval=daytona_data["auto_delete_interval"],
-            python_version=daytona_data["python_version"],
-            snapshot_enabled=daytona_data.get("snapshot_enabled", True),
-            snapshot_name=daytona_data.get("snapshot_name"),
-            snapshot_auto_create=daytona_data.get("snapshot_auto_create", True),
-        )
-
-        # Load Security configuration
-        security_data = config_data["security"]
-        validate_section_fields(security_data, SECURITY_REQUIRED_FIELDS, "security")
-
-        security_config = SecurityConfig(
-            max_execution_time=security_data["max_execution_time"],
-            max_code_length=security_data["max_code_length"],
-            max_file_size=security_data["max_file_size"],
-            enable_code_validation=security_data["enable_code_validation"],
-            allowed_imports=security_data["allowed_imports"],
-            blocked_patterns=security_data["blocked_patterns"],
-        )
-
-        # Load MCP configuration
-        mcp_data = config_data["mcp"]
-        validate_section_fields(mcp_data, MCP_REQUIRED_FIELDS, "mcp")
-
-        mcp_servers = [MCPServerConfig(**server) for server in mcp_data["servers"]]
-        mcp_config = MCPConfig(
-            servers=mcp_servers,
-            tool_discovery_enabled=mcp_data["tool_discovery_enabled"],
-            lazy_load=mcp_data.get("lazy_load", True),
-            cache_duration=mcp_data.get("cache_duration"),
-            tool_exposure_mode=mcp_data.get("tool_exposure_mode", "summary"),
-        )
-
-        # Load Logging configuration
-        logging_data = config_data["logging"]
-        validate_section_fields(logging_data, LOGGING_REQUIRED_FIELDS, "logging")
-
-        logging_config = LoggingConfig(
-            level=logging_data["level"],
-            format=logging_data["format"],
-            file=logging_data["file"],
-        )
-
-        # Load Filesystem configuration
-        filesystem_data = config_data["filesystem"]
-        validate_section_fields(filesystem_data, FILESYSTEM_REQUIRED_FIELDS, "filesystem")
-
-        filesystem_config = FilesystemConfig(
-            allowed_directories=filesystem_data["allowed_directories"],
-            enable_path_validation=filesystem_data.get("enable_path_validation", True),
-        )
+        # Configure structlog to respect the log level from config
+        configure_logging(logging_config.level)
 
         # Load Agent configuration (optional section)
         agent_data = config_data.get("agent", {})
         use_custom_filesystem_tools = agent_data.get("use_custom_filesystem_tools", True)
+        enable_view_image = agent_data.get("enable_view_image", True)
+
+        # Load Subagent configuration (optional section)
+        subagents_data = config_data.get("subagents", {})
+        subagents_enabled = subagents_data.get("enabled", ["general-purpose"])
 
         # Create config object
         # Note: deep-agent automatically enables middlewares (TodoList, Summarization, etc.)
@@ -254,6 +214,8 @@ class AgentConfig(BaseModel):
             mcp=mcp_config,
             filesystem=filesystem_config,
             use_custom_filesystem_tools=use_custom_filesystem_tools,
+            enable_view_image=enable_view_image,
+            subagents_enabled=subagents_enabled,
         )
 
         # Store runtime data

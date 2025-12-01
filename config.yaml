@@ -129,7 +129,6 @@ storage:
 logging:
   # Logging configuration
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-  format: "json"  # json or text
   file: "logs/ptc.log"
 
 agent:
@@ -142,4 +141,12 @@ agent:
   # Note: deep-agent automatically enables these middlewares:
   # - TodoListMiddleware (write_todos)
   # - SummarizationMiddleware (auto-summarizes long conversations)
-  # - FilesystemMiddleware, SubAgentMiddleware, etc.
+  # - FilesystemMiddleware
+  # - SubAgentMiddleware
+
+# Subagent configuration
+subagents:
+  # List of enabled subagents (available: research, general-purpose)
+  enabled:
+    - general-purpose
+    - research

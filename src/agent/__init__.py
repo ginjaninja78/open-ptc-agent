@@ -16,21 +16,17 @@ Structure:
 """
 
 from .agent import PTCAgent, PTCExecutor, create_ptc_agent
-# Legacy aliases for backward compatibility
-#from .agent import CodeActAgent, CodeExecutor, create_codeact_agent
 from .backends import DaytonaBackend
 from .config import AgentConfig
 from .subagents import create_research_subagent
+from src.utils.config_loader import configure_logging
 
 __all__ = [
     "AgentConfig",
+    "configure_logging",
     "PTCAgent",
     "PTCExecutor",
     "create_ptc_agent",
-    # Legacy aliases
-    #"CodeActAgent",
-    #"CodeExecutor",
-    #"create_codeact_agent",
     "DaytonaBackend",
     "create_research_subagent",
 ]
